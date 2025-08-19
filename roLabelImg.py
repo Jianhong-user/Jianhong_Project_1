@@ -208,7 +208,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.filedock.setWidget(fileListContainer)
 
         self.zoomWidget = ZoomWidget()
-        # self.colorDialog = ColorDialog(parent=self)
+        self.colorDialog = ColorDialog(parent=self)
 
         self.canvas = Canvas()
         self.canvas.zoomRequest.connect(self.zoomRequest)
@@ -237,10 +237,10 @@ class MainWindow(QMainWindow, WindowMixin):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
         # Tzutalin 20160906 : Add file list and dock to move faster
         self.addDockWidget(Qt.RightDockWidgetArea, self.filedock)
-        self.dockFeatures = QDockWidget.DockWidgetClosable\
-            | QDockWidget.DockWidgetFloatable
-        self.dock.setFeatures(self.dock.features() ^ self.dockFeatures)
-        self.filedock.setFeatures(self.filedock.features() ^ self.dockFeatures)
+        self.dockFeatures = QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetFloatable
+        # 修改：使用正确的特性设置，保留toggleViewAction功能
+        self.dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self.filedock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
 
         # Actions
         action = partial(newAction, self)
@@ -314,7 +314,7 @@ class MainWindow(QMainWindow, WindowMixin):
                       u'Show demos')
 
         copyToNext = action('复制框到下一帧', self.copyShapesToNextImage,
-                    'Ctrl+Shift+C', 'copy', u'将当前帧的所有标注框复制到下一帧',
+                    'Ctrl+C', 'copy', u'将当前帧的所有标注框复制到下一帧',
                     enabled=True)
                     
         copyToNextAndSave = action('复制框到下一帧并保存', self.copySelectedShapesToNextImageAndSave,
@@ -366,7 +366,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         labels = self.dock.toggleViewAction()
         labels.setText('Show/Hide Label Panel')
-        labels.setShortcut('Ctrl+Shift+L')
+        labels.setShortcut('Ctrl+P')
 
         # Lavel list context menu.
         labelMenu = QMenu()
