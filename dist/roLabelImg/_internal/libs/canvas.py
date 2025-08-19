@@ -29,6 +29,8 @@ class Canvas(QWidget):
     selectionChanged = pyqtSignal(bool)
     shapeMoved = pyqtSignal()
     drawingPolygon = pyqtSignal(bool)
+    # 添加双击放大信号
+    doubleClickZoom = pyqtSignal(QPoint)
 
     hideRRect = pyqtSignal(bool)
     hideNRect = pyqtSignal(bool)
@@ -319,11 +321,15 @@ class Canvas(QWidget):
         return self.drawing() and self.current and len(self.current) > 2
 
     def mouseDoubleClickEvent(self, ev):
-        # We need at least 4 points here, since the mousePress handler
-        # adds an extra one before this handler is called.
+        # 如果正在绘制多边形且可以闭合形状，则完成绘制
         if self.canCloseShape() and len(self.current) > 3:
             self.current.popPoint()
             self.finalise()
+        else:
+            # 如果不在绘制状态，则发送双击放大信号
+            if not self.drawing():
+                # 发送双击位置给主窗口处理放大
+                self.doubleClickZoom.emit(ev.pos())
 
     def selectShape(self, shape):
         self.deSelectShape()

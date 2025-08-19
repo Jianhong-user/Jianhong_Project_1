@@ -141,6 +141,54 @@ class MainWindow(QMainWindow, WindowMixin):
         # 添加进度显示相关变量
         self.progressLabel = None
         
+        # 添加模式显示标签 - 新的美观设计
+        self.modeLabel = QLabel()
+        self.modeLabel.setFixedHeight(32)
+        self.modeLabel.setAlignment(Qt.AlignCenter)
+        
+        # 设置现代化样式
+        beginner_style = """
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                    stop:0 #4CAF50, stop:1 #45a049);
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                border-radius: 16px;
+                padding: 6px 16px;
+                margin: 2px;
+                border: 2px solid #388E3C;
+            }
+            QLabel:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                    stop:0 #45a049, stop:1 #4CAF50);
+            }
+        """
+        
+        advanced_style = """
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                    stop:0 #FF6B35, stop:1 #F7931E);
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                border-radius: 16px;
+                padding: 6px 16px;
+                margin: 2px;
+                border: 2px solid #E65100;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            }
+            QLabel:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                    stop:0 #F7931E, stop:1 #FF6B35);
+                transform: translateY(-1px);
+            }
+        """
+        
+        # 存储样式以便切换时使用
+        self.beginnerModeStyle = beginner_style
+        self.advancedModeStyle = advanced_style
+        
         # 添加双击放大相关变量
         self.isZoomedIn = False  # 是否已放大
         self.originalZoom = 100  # 原始缩放比例
@@ -300,7 +348,7 @@ class MainWindow(QMainWindow, WindowMixin):
                       enabled=False)
 
         advancedMode = action('&Advanced Mode', self.toggleAdvancedMode,
-                              'Ctrl+Shift+A', 'expert', u'Switch to advanced mode',
+                              'Ctrl+Shift+P', 'expert', u'Switch to advanced mode',
                               checkable=True)
 
         hideAll = action('&Hide\nRectBox', partial(self.togglePolygons, False),
@@ -320,6 +368,11 @@ class MainWindow(QMainWindow, WindowMixin):
         copyToNextAndSave = action('复制框到下一帧并保存', self.copySelectedShapesToNextImageAndSave,
                     'Ctrl+V', 'copy', u'将当前帧的标注框复制到下一帧并自动保存',
                     enabled=True)
+
+        # 添加半自动标注功能
+        autoAnnotate = action('AI半自动标注', self.showAutoAnnotateDialog,
+                             'Ctrl+I', 'ai', u'使用AI模型进行半自动标注',
+                             enabled=True)
 
         zoom = QWidgetAction(self)
         zoom.setDefaultWidget(self.zoomWidget)
@@ -380,6 +433,7 @@ class MainWindow(QMainWindow, WindowMixin):
                               lineColor=color1, fillColor=color2,
                               create=create, createRo=createRo, delete=delete, edit=edit, copy=copy,
                               createMode=createMode, editMode=editMode, advancedMode=advancedMode,
+                              autoAnnotate=autoAnnotate, openNextImg=openNextImg, openPrevImg=openPrevImg,
                               shapeLineColor=shapeLineColor, shapeFillColor=shapeFillColor,
                               zoom=zoom, zoomIn=zoomIn, zoomOut=zoomOut, zoomOrg=zoomOrg,
                               fitWindow=fitWindow, fitWidth=fitWidth,
@@ -428,18 +482,49 @@ class MainWindow(QMainWindow, WindowMixin):
             zoomIn, zoom, zoomOut, fitWindow, fitWidth, copyToNext, copyToNextAndSave)
 
         self.actions.advanced = (
-            open, save, None,
-            createMode, editMode, None,
-            hideAll, showAll, copyToNext, copyToNextAndSave)
+            open, opendir, openNextImg, openPrevImg, save, None,  # 添加图片切换功能
+            create, createRo, copy, delete, None,                # 基本标注功能
+            createMode, editMode, None,                          # 高级编辑模式
+            autoAnnotate, None,                                  # AI半自动标注功能
+            hideAll, showAll, None,                              # 显示控制
+            zoomIn, zoom, zoomOut, fitWindow, fitWidth, None,    # 缩放控制
+            copyToNext, copyToNextAndSave)                       # 批量操作
 
         self.statusBar().showMessage('%s started.' % __appname__)
         self.statusBar().show()
 
+        # 创建状态栏右侧容器
+        statusRightWidget = QWidget()
+        statusRightLayout = QHBoxLayout(statusRightWidget)
+        statusRightLayout.setContentsMargins(5, 2, 5, 2)
+        statusRightLayout.setSpacing(10)
+        
         # 添加进度显示标签到状态栏
         self.progressLabel = QLabel()
-        self.progressLabel.setAlignment(Qt.AlignRight)
-        self.progressLabel.setStyleSheet("QLabel { color: #2E8B57; font-weight: bold; }")
-        self.statusBar().addPermanentWidget(self.progressLabel)
+        self.progressLabel.setAlignment(Qt.AlignCenter)
+        self.progressLabel.setStyleSheet("""
+            QLabel {
+                color: #2E8B57;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 4px 8px;
+                background-color: rgba(46, 139, 87, 0.1);
+                border-radius: 8px;
+                border: 1px solid rgba(46, 139, 87, 0.3);
+            }
+        """)
+        
+        # 添加分隔符
+        separator = QLabel("|")
+        separator.setStyleSheet("color: #CCCCCC; font-weight: bold;")
+        
+        # 将组件添加到布局
+        statusRightLayout.addWidget(self.progressLabel)
+        statusRightLayout.addWidget(separator)
+        statusRightLayout.addWidget(self.modeLabel)
+        
+        # 将右侧容器添加到状态栏
+        self.statusBar().addPermanentWidget(statusRightWidget)
 
         # Application state.
         self.image = QImage()
@@ -530,6 +615,10 @@ class MainWindow(QMainWindow, WindowMixin):
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
+        # 初始化模式显示
+        self.updateModeDisplay()
+        self.statusBar().addPermanentWidget(self.modeLabel)
+
         self.populateModeActions()
 
     ## Support Functions ##
@@ -539,16 +628,80 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def toggleAdvancedMode(self, value=True):
         self._beginner = not value
-        self.canvas.setEditing(True)
+        self.canvas.setEditing(True)  # 保持编辑功能启用
         self.populateModeActions()
-        self.editButton.setVisible(not value)
+        self.editButton.setVisible(not value)  # 高级模式隐藏编辑按钮
+
+        self.updateModeDisplay()
+
         if value:
-            self.actions.createMode.setEnabled(True)
-            self.actions.editMode.setEnabled(False)
-            # self.dock.setFeatures(self.dock.features() | self.dockFeatures)
+            status_msg = "已切换到高级模式 - 更多专业功能已启用"
+            # 启用高级功能
+            self.enableAdvancedFeatures()
         else:
+            status_msg = "已切换到初学者模式 - 简化界面更易上手"
+            # 禁用高级功能
+            self.disableAdvancedFeatures()
+
+        # 添加切换动画效果
+        self.animateModeSwitch()
+
+        self.status(status_msg)
+
+    def enableAdvancedFeatures(self):
+        """启用高级模式专有功能"""
+        # 启用批量选择
+        self.labelList.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # 启用精确编辑模式
+        if hasattr(self, 'precisionPanel'):
+            self.precisionPanel.setVisible(True)
+
+    def animateModeSwitch(self):
+        """为模式切换添加平滑动画效果"""
+        try:
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+            from PyQt5.QtCore import pyqtProperty
+            
+            # 创建透明度动画
+            self.modeAnimation = QPropertyAnimation(self.modeLabel, b"windowOpacity")
+            self.modeAnimation.setDuration(300)
+            self.modeAnimation.setStartValue(0.3)
+            self.modeAnimation.setEndValue(1.0)
+            self.modeAnimation.setEasingCurve(QEasingCurve.OutCubic)
+            self.modeAnimation.start()
+            
+        except ImportError:
+            # 如果动画库不可用，跳过动画
             pass
-            # self.dock.setFeatures(self.dock.features() ^ self.dockFeatures)
+        
+    def disableAdvancedFeatures(self):
+        """禁用高级模式专有功能"""
+        # 禁用批量选择，回到单选模式
+        self.labelList.setSelectionMode(QAbstractItemView.SingleSelection)
+        # 隐藏精确编辑面板
+        if hasattr(self, 'precisionPanel'):
+            self.precisionPanel.setVisible(False)
+
+    def updateModeDisplay(self):
+        """更新模式显示，支持主题切换"""
+        if self.beginner():
+            self.modeLabel.setText("🌱 初学者模式")
+            self.modeLabel.setStyleSheet(self.beginnerModeStyle)
+            # 更新工具栏主题色
+            self.tools.setStyleSheet("""
+                QToolBar {
+                    border-bottom: 3px solid #4CAF50;
+                }
+            """)
+        else:
+            self.modeLabel.setText("🚀 高级模式")
+            self.modeLabel.setStyleSheet(self.advancedModeStyle)
+            # 更新工具栏主题色
+            self.tools.setStyleSheet("""
+                QToolBar {
+                    border-bottom: 3px solid #FF6B35;
+                }
+            """)
 
     def populateModeActions(self):
         if self.beginner():
@@ -657,30 +810,63 @@ class MainWindow(QMainWindow, WindowMixin):
                 self.status("已打开使用说明文档")
             except Exception as e:
                 self.status(f"无法打开使用说明文档: {str(e)}")
-                # 如果无法打开文档，回退到原来的功能
-                subprocess.Popen([self.screencastViewer, self.screencast])
+                # 显示内置帮助对话框而不是启动外部程序
+                self.showBuiltinHelp()
         else:
             self.status("使用说明文档不存在")
-            # 如果文档不存在，回退到原来的功能
-            subprocess.Popen([self.screencastViewer, self.screencast])
+            # 显示内置帮助对话框而不是启动外部程序
+            self.showBuiltinHelp()
+
+    def showBuiltinHelp(self):
+        """显示内置帮助对话框"""
+        help_text = """
+# roLabelImg 使用帮助
+
+## 基本操作
+- W: 创建旋转矩形
+- Ctrl+U: 创建普通矩形
+- D: 下一张图片
+- A: 上一张图片
+- Del: 删除选中的标注框
+- Ctrl+S: 保存
+- Ctrl+Shift+A: 切换高级/初学者模式
+
+## 标注操作
+- 左键点击: 选择标注框
+- 右键拖动: 移动图片
+- 鼠标滚轮: 缩放图片
+- 双击: 放大到鼠标位置
+
+## 旋转矩形操作
+- Z/X: 顺时针微调旋转
+- C/V: 逆时针微调旋转
+- 右键拖动顶点: 旋转矩形
+
+更多详细信息请查看项目目录下的使用说明文档。
+        """
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("使用帮助")
+        msg.setText(help_text)
+        msg.setTextFormat(Qt.PlainText)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
 
     # create Normal Rect
     def createShape(self):
-        assert self.beginner()
+        # assert self.beginner()  # 移除这行断言
         self.canvas.setEditing(False)
-        self.canvas.canDrawRotatedRect = False
         self.actions.create.setEnabled(False)
-        self.isEnableCreate = False
-        self.actions.createRo.setEnabled(False)
-        self.isEnableCreateRo = False
+        self.actions.createRo.setEnabled(True)
+        self.canvas.fourpoint = False
 
     # create Rotated Rect
     def createRoShape(self):
-        assert self.beginner()
+        # assert self.beginner()  # 移除这行断言
         self.canvas.setEditing(False)
-        self.canvas.canDrawRotatedRect = True
-        self.actions.create.setEnabled(False)
+        self.actions.create.setEnabled(True)
         self.actions.createRo.setEnabled(False)
+        self.canvas.fourpoint = True
 
     def toggleDrawingSensitive(self, drawing=True):
         """In the middle of drawing, toggling between modes should be disabled."""
@@ -1478,6 +1664,34 @@ class MainWindow(QMainWindow, WindowMixin):
             for action in self.actions.onShapesPresent:
                 action.setEnabled(False)
 
+    def getSelectedShapes(self):
+        """获取所有选中的形状"""
+        selected_items = self.labelList.selectedItems()
+        selected_shapes = []
+        for item in selected_items:
+            if item in self.itemsToShapes:
+                selected_shapes.append(self.itemsToShapes[item])
+        return selected_shapes
+        
+    def batchDeleteShapes(self):
+        """批量删除选中的形状"""
+        if not self.advanced():
+            return
+            
+        selected_shapes = self.getSelectedShapes()
+        if not selected_shapes:
+            return
+            
+        reply = QMessageBox.question(self, '批量删除', 
+                                   f'确定要删除选中的 {len(selected_shapes)} 个标注框吗？',
+                                   QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            for shape in selected_shapes:
+                self.canvas.deleteShape(shape)
+                self.remLabel(shape)
+            self.setDirty()
+            self.status(f"已删除 {len(selected_shapes)} 个标注框")
+
     def chshapeLineColor(self):
         color = self.colorDialog.getColor(self.lineColor, u'Choose line color',
                                           default=DEFAULT_LINE_COLOR)
@@ -1536,6 +1750,14 @@ class MainWindow(QMainWindow, WindowMixin):
     def moveShape(self):
         self.canvas.endMove(copy=False)
         self.setDirty()
+
+    def showAutoAnnotateDialog(self):
+        """显示半自动标注功能的占位对话框"""
+        QMessageBox.information(self, "AI半自动标注", 
+                               "敬请期待！\n\n此功能将在后续版本中提供：\n" +
+                               "• 自动检测目标\n" +
+                               "• 智能标注建议\n" +
+                               "• 批量处理功能")
 
     def loadPredefinedClasses(self, predefClassesFile):
         if os.path.exists(predefClassesFile) is True:
