@@ -255,6 +255,9 @@ class MainWindow(QMainWindow, WindowMixin):
         self.filedock.setObjectName(u'File')
         self.filedock.setWidget(fileListContainer)
 
+        # 添加统计面板
+        self.createStatisticsPanel()
+
         self.zoomWidget = ZoomWidget()
         self.colorDialog = ColorDialog(parent=self)
 
@@ -285,10 +288,14 @@ class MainWindow(QMainWindow, WindowMixin):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
         # Tzutalin 20160906 : Add file list and dock to move faster
         self.addDockWidget(Qt.RightDockWidgetArea, self.filedock)
+        # 添加统计面板到右侧dock区域
+        self.addDockWidget(Qt.RightDockWidgetArea, self.statsdock)
+        
         self.dockFeatures = QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetFloatable
         # 修改：使用正确的特性设置，保留toggleViewAction功能
         self.dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
         self.filedock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self.statsdock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
 
         # Actions
         action = partial(newAction, self)
@@ -617,7 +624,6 @@ class MainWindow(QMainWindow, WindowMixin):
 
         # 初始化模式显示
         self.updateModeDisplay()
-        self.statusBar().addPermanentWidget(self.modeLabel)
 
         self.populateModeActions()
 
@@ -743,6 +749,222 @@ class MainWindow(QMainWindow, WindowMixin):
     def enableCreateRo(self,b):
         self.isEnableCreateRo = not b
         self.actions.createRo.setEnabled(self.isEnableCreateRo)
+
+    def createStatisticsPanel(self):
+        """创建统计面板"""
+        # 创建统计面板的主容器
+        statsWidget = QWidget()
+        statsLayout = QVBoxLayout()
+        statsLayout.setContentsMargins(5, 5, 5, 5)
+        statsLayout.setSpacing(10)
+        
+        # 当前图像统计区域
+        currentImageGroup = QGroupBox("当前图像统计")
+        currentImageLayout = QVBoxLayout()
+        
+        # 标注框总数
+        self.totalBoxesLabel = QLabel("标注框总数: 0")
+        self.totalBoxesLabel.setStyleSheet("font-weight: bold; color: #2E86AB;")
+        currentImageLayout.addWidget(self.totalBoxesLabel)
+        
+        # 旋转框数量
+        self.rotatedBoxesLabel = QLabel("旋转框: 0")
+        self.rotatedBoxesLabel.setStyleSheet("color: #A23B72;")
+        currentImageLayout.addWidget(self.rotatedBoxesLabel)
+        
+        # 普通框数量
+        self.normalBoxesLabel = QLabel("普通框: 0")
+        self.normalBoxesLabel.setStyleSheet("color: #F18F01;")
+        currentImageLayout.addWidget(self.normalBoxesLabel)
+        
+        # 困难样本数量
+        self.difficultBoxesLabel = QLabel("困难样本: 0")
+        self.difficultBoxesLabel.setStyleSheet("color: #C73E1D;")
+        currentImageLayout.addWidget(self.difficultBoxesLabel)
+        
+        currentImageGroup.setLayout(currentImageLayout)
+        statsLayout.addWidget(currentImageGroup)
+        
+        # 标签分类统计区域
+        labelStatsGroup = QGroupBox("标签分类统计")
+        labelStatsLayout = QVBoxLayout()
+        
+        # 创建标签统计的滚动区域
+        self.labelStatsScrollArea = QScrollArea()
+        self.labelStatsWidget = QWidget()
+        self.labelStatsLayout = QVBoxLayout()
+        self.labelStatsWidget.setLayout(self.labelStatsLayout)
+        self.labelStatsScrollArea.setWidget(self.labelStatsWidget)
+        self.labelStatsScrollArea.setWidgetResizable(True)
+        self.labelStatsScrollArea.setMaximumHeight(150)
+        
+        labelStatsLayout.addWidget(self.labelStatsScrollArea)
+        labelStatsGroup.setLayout(labelStatsLayout)
+        statsLayout.addWidget(labelStatsGroup)
+        
+        # 项目整体统计区域
+        projectStatsGroup = QGroupBox("项目整体统计")
+        projectStatsLayout = QVBoxLayout()
+        
+        # 总图像数
+        self.totalImagesLabel = QLabel("总图像数: 0")
+        self.totalImagesLabel.setStyleSheet("font-weight: bold;")
+        projectStatsLayout.addWidget(self.totalImagesLabel)
+        
+        # 已标注图像数
+        self.annotatedImagesLabel = QLabel("已标注: 0")
+        self.annotatedImagesLabel.setStyleSheet("color: #28A745;")
+        projectStatsLayout.addWidget(self.annotatedImagesLabel)
+        
+        # 标注进度
+        self.progressPercentLabel = QLabel("进度: 0.0%")
+        self.progressPercentLabel.setStyleSheet("color: #007BFF;")
+        projectStatsLayout.addWidget(self.progressPercentLabel)
+        
+        # 进度条
+        self.progressBar = QProgressBar()
+        self.progressBar.setRange(0, 100)
+        self.progressBar.setValue(0)
+        self.progressBar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid grey;
+                border-radius: 5px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #28A745;
+                border-radius: 3px;
+            }
+        """)
+        projectStatsLayout.addWidget(self.progressBar)
+        
+        projectStatsGroup.setLayout(projectStatsLayout)
+        statsLayout.addWidget(projectStatsGroup)
+        
+        # 添加弹性空间
+        statsLayout.addStretch()
+        
+        # 刷新按钮
+        refreshButton = QPushButton("刷新统计")
+        refreshButton.setStyleSheet("""
+            QPushButton {
+                background-color: #007BFF;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0056B3;
+            }
+            QPushButton:pressed {
+                background-color: #004085;
+            }
+        """)
+        refreshButton.clicked.connect(self.updateStatistics)
+        statsLayout.addWidget(refreshButton)
+        
+        statsWidget.setLayout(statsLayout)
+        
+        # 创建dock widget
+        self.statsdock = QDockWidget(u'统计面板', self)
+        self.statsdock.setObjectName(u'Statistics')
+        self.statsdock.setWidget(statsWidget)
+        
+        # 初始化统计数据
+        self.updateStatistics()
+
+    def updateStatistics(self):
+        """更新统计数据"""
+        if not hasattr(self, 'statsdock'):
+            return
+            
+        # 当前图像统计
+        if hasattr(self, 'canvas') and self.canvas.shapes:
+            shapes = self.canvas.shapes
+            total_boxes = len(shapes)
+            rotated_boxes = sum(1 for shape in shapes if hasattr(shape, 'isRotated') and shape.isRotated)
+            normal_boxes = total_boxes - rotated_boxes
+            difficult_boxes = sum(1 for shape in shapes if hasattr(shape, 'difficult') and shape.difficult)
+            
+            self.totalBoxesLabel.setText(f"标注框总数: {total_boxes}")
+            self.rotatedBoxesLabel.setText(f"旋转框: {rotated_boxes}")
+            self.normalBoxesLabel.setText(f"普通框: {normal_boxes}")
+            self.difficultBoxesLabel.setText(f"困难样本: {difficult_boxes}")
+            
+            # 更新标签分类统计
+            self.updateLabelStatistics(shapes)
+        else:
+            self.totalBoxesLabel.setText("标注框总数: 0")
+            self.rotatedBoxesLabel.setText("旋转框: 0")
+            self.normalBoxesLabel.setText("普通框: 0")
+            self.difficultBoxesLabel.setText("困难样本: 0")
+            self.clearLabelStatistics()
+        
+        # 项目整体统计
+        self.updateProjectStatistics()
+        
+        # 添加重叠检测
+        self.updateOverlapWarning()
+
+    def updateLabelStatistics(self, shapes):
+        """更新标签分类统计"""
+        # 清除现有的标签统计
+        self.clearLabelStatistics()
+        
+        # 统计各标签的数量
+        label_counts = {}
+        for shape in shapes:
+            label = shape.label if hasattr(shape, 'label') and shape.label else "未命名"
+            label_counts[label] = label_counts.get(label, 0) + 1
+        
+        # 显示标签统计
+        for label, count in sorted(label_counts.items()):
+            label_item = QLabel(f"{label}: {count}")
+            label_item.setStyleSheet("padding: 2px; border-bottom: 1px solid #E0E0E0;")
+            self.labelStatsLayout.addWidget(label_item)
+
+    def clearLabelStatistics(self):
+        """清除标签统计显示"""
+        while self.labelStatsLayout.count():
+            child = self.labelStatsLayout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def updateProjectStatistics(self):
+        """更新项目整体统计"""
+        if hasattr(self, 'mImgList') and self.mImgList:
+            total_images = len(self.mImgList)
+            annotated_count = 0
+            
+            # 计算已标注的图像数量
+            for img_path in self.mImgList:
+                img_dir = os.path.dirname(img_path)
+                img_name = os.path.basename(img_path)
+                xml_name = os.path.splitext(img_name)[0] + XML_EXT
+                
+                if self.defaultSaveDir:
+                    xml_path = os.path.join(self.defaultSaveDir, xml_name)
+                else:
+                    xml_path = os.path.join(img_dir, xml_name)
+                    
+                if os.path.exists(xml_path):
+                    annotated_count += 1
+            
+            # 计算进度百分比
+            progress_percent = (annotated_count / total_images * 100) if total_images > 0 else 0
+            
+            # 更新显示
+            self.totalImagesLabel.setText(f"总图像数: {total_images}")
+            self.annotatedImagesLabel.setText(f"已标注: {annotated_count}")
+            self.progressPercentLabel.setText(f"进度: {progress_percent:.1f}%")
+            self.progressBar.setValue(int(progress_percent))
+        else:
+            self.totalImagesLabel.setText("总图像数: 0")
+            self.annotatedImagesLabel.setText("已标注: 0")
+            self.progressPercentLabel.setText("进度: 0.0%")
+            self.progressBar.setValue(0)
 
     def toggleActions(self, value=True):
         """Enable/Disable widgets which depend on an opened image."""
@@ -996,6 +1218,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.labelList.addItem(item)
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
+        self.updateStatistics()
+        self.updateOverlapWarning()
 
     def remLabel(self, shape):
         if shape is None:
@@ -1005,6 +1229,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.labelList.takeItem(self.labelList.row(item))
         del self.shapesToItems[shape]
         del self.itemsToShapes[item]
+        self.updateStatistics()
+        self.updateOverlapWarning()
 
     def loadLabels(self, shapes):
         s = []
@@ -1029,6 +1255,8 @@ class MainWindow(QMainWindow, WindowMixin):
             self.addLabel(shape)
 
         self.canvas.loadShapes(s)
+        self.updateStatistics()
+        self.updateOverlapWarning()
 
     def saveLabels(self, annotationFilePath):
         annotationFilePath = ustr(annotationFilePath)
@@ -1883,6 +2111,174 @@ class MainWindow(QMainWindow, WindowMixin):
             self.isZoomedIn = False
             self.zoomCenter = None
             self.status("已恢复到原始大小")
+
+    def checkOverlappingBoxes(self):
+        """检测重叠的标注框"""
+        if not hasattr(self, 'canvas') or not self.canvas.shapes:
+            return []
+        
+        shapes = self.canvas.shapes
+        overlapping_pairs = []
+        
+        # 检查每对标注框是否重叠
+        for i in range(len(shapes)):
+            for j in range(i + 1, len(shapes)):
+                shape1 = shapes[i]
+                shape2 = shapes[j]
+                
+                if self.isOverlapping(shape1, shape2):
+                    overlapping_pairs.append((i, j, shape1, shape2))
+        
+        return overlapping_pairs
+    
+    def isOverlapping(self, shape1, shape2):
+        """判断两个标注框是否重叠"""
+        try:
+            # 获取两个形状的边界矩形
+            rect1 = shape1.boundingRect()
+            rect2 = shape2.boundingRect()
+            
+            # 检查边界矩形是否相交
+            if not rect1.intersects(rect2):
+                return False
+            
+            # 对于旋转框，需要更精确的检测
+            if (hasattr(shape1, 'isRotated') and shape1.isRotated) or \
+               (hasattr(shape2, 'isRotated') and shape2.isRotated):
+                return self.checkRotatedBoxOverlap(shape1, shape2)
+            else:
+                # 普通矩形框的重叠检测
+                return self.checkRectangleOverlap(shape1, shape2)
+                
+        except Exception as e:
+            print(f"重叠检测错误: {e}")
+            return False
+    
+    def checkRectangleOverlap(self, shape1, shape2):
+        """检测普通矩形框的重叠"""
+        try:
+            rect1 = shape1.boundingRect()
+            rect2 = shape2.boundingRect()
+            
+            # 计算重叠面积
+            intersection = rect1.intersected(rect2)
+            if intersection.isEmpty():
+                return False
+            
+            # 计算重叠比例（重叠面积 / 较小框面积）
+            area1 = rect1.width() * rect1.height()
+            area2 = rect2.width() * rect2.height()
+            overlap_area = intersection.width() * intersection.height()
+            
+            min_area = min(area1, area2)
+            overlap_ratio = overlap_area / min_area if min_area > 0 else 0
+            
+            # 重叠比例超过10%认为是重叠
+            return overlap_ratio > 0.1
+            
+        except Exception as e:
+            print(f"矩形重叠检测错误: {e}")
+            return False
+    
+    def checkRotatedBoxOverlap(self, shape1, shape2):
+        """检测旋转框的重叠（使用SAT算法）"""
+        try:
+            # 获取两个形状的顶点
+            points1 = shape1.points if hasattr(shape1, 'points') else []
+            points2 = shape2.points if hasattr(shape2, 'points') else []
+            
+            if len(points1) < 4 or len(points2) < 4:
+                return False
+            
+            # 使用分离轴定理(SAT)检测旋转矩形重叠
+            return self.separatingAxisTheorem(points1, points2)
+            
+        except Exception as e:
+            print(f"旋转框重叠检测错误: {e}")
+            return False
+    
+    def separatingAxisTheorem(self, points1, points2):
+        """分离轴定理检测多边形重叠"""
+        try:
+            def getAxes(points):
+                """获取多边形的所有边的法向量作为分离轴"""
+                axes = []
+                for i in range(len(points)):
+                    p1 = points[i]
+                    p2 = points[(i + 1) % len(points)]
+                    edge = QPointF(p2.x() - p1.x(), p2.y() - p1.y())
+                    # 法向量（垂直于边）
+                    normal = QPointF(-edge.y(), edge.x())
+                    # 归一化
+                    length = (normal.x() ** 2 + normal.y() ** 2) ** 0.5
+                    if length > 0:
+                        axes.append(QPointF(normal.x() / length, normal.y() / length))
+                return axes
+            
+            def projectPolygon(points, axis):
+                """将多边形投影到轴上"""
+                dots = [point.x() * axis.x() + point.y() * axis.y() for point in points]
+                return min(dots), max(dots)
+            
+            # 获取两个多边形的所有分离轴
+            axes = getAxes(points1) + getAxes(points2)
+            
+            # 检查每个轴上的投影是否分离
+            for axis in axes:
+                min1, max1 = projectPolygon(points1, axis)
+                min2, max2 = projectPolygon(points2, axis)
+                
+                # 如果在某个轴上分离，则不重叠
+                if max1 < min2 or max2 < min1:
+                    return False
+            
+            # 所有轴上都有重叠，则两个多边形重叠
+            return True
+            
+        except Exception as e:
+            print(f"SAT算法错误: {e}")
+            return False
+    
+    def updateOverlapWarning(self):
+        """更新重叠警告信息"""
+        try:
+            overlapping_pairs = self.checkOverlappingBoxes()
+            
+            if overlapping_pairs:
+                warning_msg = f"⚠️ 检测到 {len(overlapping_pairs)} 对重叠标注框"
+                self.statusBar().showMessage(warning_msg, 10000)  # 显示10秒
+                
+                # 在状态栏添加永久的警告标签
+                if not hasattr(self, 'overlapWarningLabel'):
+                    self.overlapWarningLabel = QLabel()
+                    self.overlapWarningLabel.setStyleSheet("""
+                        QLabel {
+                            color: #FF4444;
+                            font-weight: bold;
+                            background-color: rgba(255, 68, 68, 0.1);
+                            border: 1px solid #FF4444;
+                            border-radius: 4px;
+                            padding: 2px 6px;
+                        }
+                    """)
+                    self.statusBar().addPermanentWidget(self.overlapWarningLabel)
+                
+                self.overlapWarningLabel.setText(f"⚠️ {len(overlapping_pairs)}对重叠")
+                self.overlapWarningLabel.setVisible(True)
+                
+                # 打印详细信息到控制台
+                print(f"检测到重叠标注框:")
+                for i, (idx1, idx2, shape1, shape2) in enumerate(overlapping_pairs):
+                    label1 = getattr(shape1, 'label', '未命名')
+                    label2 = getattr(shape2, 'label', '未命名')
+                    print(f"  {i+1}. 标注框 {idx1+1}({label1}) 与 标注框 {idx2+1}({label2}) 重叠")
+            else:
+                # 没有重叠，隐藏警告
+                if hasattr(self, 'overlapWarningLabel'):
+                    self.overlapWarningLabel.setVisible(False)
+                    
+        except Exception as e:
+            print(f"更新重叠警告错误: {e}")
 
     def adjustScrollToCenter(self, image_pos, target_zoom):
         """调整滚动条使指定的图像位置居中显示"""
