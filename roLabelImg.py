@@ -380,6 +380,10 @@ class MainWindow(QMainWindow, WindowMixin):
         autoAnnotate = action('AI半自动标注', self.showAutoAnnotateDialog,
                              'Ctrl+I', 'ai', u'使用AI模型进行半自动标注',
                              enabled=True)
+        
+        deleteOverlapping = action('删除重叠框', self.deleteOverlappingBoxes,
+                                  'Ctrl+Shift+D', 'delete', u'一键删除检测到的重叠标注框',
+                                  enabled=True)
 
         zoom = QWidgetAction(self)
         zoom.setDefaultWidget(self.zoomWidget)
@@ -440,7 +444,8 @@ class MainWindow(QMainWindow, WindowMixin):
                               lineColor=color1, fillColor=color2,
                               create=create, createRo=createRo, delete=delete, edit=edit, copy=copy,
                               createMode=createMode, editMode=editMode, advancedMode=advancedMode,
-                              autoAnnotate=autoAnnotate, openNextImg=openNextImg, openPrevImg=openPrevImg,
+                              autoAnnotate=autoAnnotate, deleteOverlapping=deleteOverlapping,
+                              openNextImg=openNextImg, openPrevImg=openPrevImg,
                               shapeLineColor=shapeLineColor, shapeFillColor=shapeFillColor,
                               zoom=zoom, zoomIn=zoomIn, zoomOut=zoomOut, zoomOrg=zoomOrg,
                               fitWindow=fitWindow, fitWidth=fitWidth,
@@ -486,13 +491,13 @@ class MainWindow(QMainWindow, WindowMixin):
         self.tools = self.toolbar('Tools')
         self.actions.beginner = (
             open, opendir, openNextImg, openPrevImg, verify, save, None, create, createRo, copy, delete, None,
-            zoomIn, zoom, zoomOut, fitWindow, fitWidth, copyToNext, copyToNextAndSave)
+            zoomIn, zoom, zoomOut, fitWindow, fitWidth, copyToNext, copyToNextAndSave, deleteOverlapping)
 
         self.actions.advanced = (
             open, opendir, openNextImg, openPrevImg, save, None,  # 添加图片切换功能
             create, createRo, copy, delete, None,                # 基本标注功能
             createMode, editMode, None,                          # 高级编辑模式
-            autoAnnotate, None,                                  # AI半自动标注功能
+            autoAnnotate, deleteOverlapping, None,               # AI功能和质量检测
             hideAll, showAll, None,                              # 显示控制
             zoomIn, zoom, zoomOut, fitWindow, fitWidth, None,    # 缩放控制
             copyToNext, copyToNextAndSave)                       # 批量操作
@@ -721,7 +726,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.menus.edit.clear()
         actions = (self.actions.create,) if self.beginner()\
             else (self.actions.createMode, self.actions.editMode)
-        addActions(self.menus.edit, actions + self.actions.editMenu + (self.actions.copyToNext, self.actions.copyToNextAndSave,))
+        addActions(self.menus.edit, actions + self.actions.editMenu + (self.actions.copyToNext, self.actions.copyToNextAndSave, self.actions.deleteOverlapping,))
 
     def setBeginner(self):
         self.tools.clear()
@@ -2314,6 +2319,91 @@ class MainWindow(QMainWindow, WindowMixin):
         
         h_bar.setValue(new_h_value)
         v_bar.setValue(new_v_value)
+
+    def deleteOverlappingBoxes(self):
+        """一键删除重叠的标注框"""
+        if not hasattr(self, 'canvas') or not self.canvas.shapes:
+            QMessageBox.information(self, "提示", "当前没有标注框可以检测")
+            return
+        
+        overlapping_pairs = self.checkOverlappingBoxes()
+        
+        if not overlapping_pairs:
+            QMessageBox.information(self, "提示", "未检测到重叠的标注框")
+            return
+        
+        # 弹出确认对话框
+        reply = QMessageBox.question(self, '删除重叠框', 
+                                   f'检测到 {len(overlapping_pairs)} 对重叠标注框。\n\n删除策略：保留面积较大的框，删除面积较小的框。\n\n确定要执行删除操作吗？',
+                                   QMessageBox.Yes | QMessageBox.No,
+                                   QMessageBox.No)
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 收集需要删除的形状（避免重复删除）
+        shapes_to_delete = set()
+        
+        for idx1, idx2, shape1, shape2 in overlapping_pairs:
+            # 计算两个框的面积
+            area1 = self.calculateShapeArea(shape1)
+            area2 = self.calculateShapeArea(shape2)
+            
+            # 删除面积较小的框
+            if area1 < area2:
+                shapes_to_delete.add(shape1)
+            else:
+                shapes_to_delete.add(shape2)
+        
+        # 执行删除操作 - 修复这里的错误
+        deleted_count = 0
+        for shape in shapes_to_delete:
+            if shape in self.canvas.shapes:  # 确保形状还存在
+                self.canvas.shapes.remove(shape)  # 从canvas中移除
+                self.remLabel(shape)  # 从标签列表中移除
+                deleted_count += 1
+
+        if deleted_count > 0:
+            self.setDirty()
+            self.canvas.update()  # 更新画布显示
+            self.status(f"已删除 {deleted_count} 个重叠的标注框")
+            # 重新检测并更新警告
+            self.updateOverlapWarning()
+            QMessageBox.information(self, "删除完成", f"成功删除了 {deleted_count} 个重叠的标注框")
+        else:
+            QMessageBox.information(self, "提示", "没有删除任何标注框")
+    
+    def calculateShapeArea(self, shape):
+        """计算标注框的面积"""
+        try:
+            if hasattr(shape, 'isRotated') and shape.isRotated:
+                # 旋转框：使用顶点计算面积
+                if hasattr(shape, 'points') and len(shape.points) >= 4:
+                    points = shape.points
+                    # 使用鞋带公式计算多边形面积
+                    area = 0
+                    n = len(points)
+                    for i in range(n):
+                        j = (i + 1) % n
+                        area += points[i].x() * points[j].y()
+                        area -= points[j].x() * points[i].y()
+                    return abs(area) / 2
+                else:
+                    # 备用方案：使用边界矩形
+                    rect = shape.boundingRect()
+                    return rect.width() * rect.height()
+            else:
+                # 普通矩形框：使用边界矩形
+                rect = shape.boundingRect()
+                return rect.width() * rect.height()
+        except Exception as e:
+            print(f"计算面积错误: {e}")
+            # 出错时返回边界矩形面积
+            try:
+                rect = shape.boundingRect()
+                return rect.width() * rect.height()
+            except:
+                return 0
 
 
 class Settings(object):
