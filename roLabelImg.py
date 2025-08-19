@@ -14,6 +14,7 @@ try:
     from PyQt5.QtGui import *
     from PyQt5.QtCore import *
     from PyQt5.QtWidgets import *
+    from PyQt5.QtCore import QTimer  # 添加这行
 except ImportError:
     # needed for py3+qt4
     # Ref:
@@ -24,6 +25,7 @@ except ImportError:
         sip.setapi('QVariant', 2)
     from PyQt4.QtGui import *
     from PyQt4.QtCore import *
+    from PyQt4.QtCore import QTimer  # 也在PyQt4部分添加
 
 import resources
 # Add internal libs
@@ -35,7 +37,8 @@ try:
     # 首先尝试直接导入
     from lib import struct, newAction, newIcon, addActions, fmtShortcut
     from shape import Shape, DEFAULT_LINE_COLOR, DEFAULT_FILL_COLOR
-    from canvas import Canvas
+    # from canvas import Canvas  # 注释掉这行
+    from libs.canvas import Canvas  # 强制使用libs中的Canvas
     from zoomWidget import ZoomWidget
     from labelDialog import LabelDialog
     from colorDialog import ColorDialog
@@ -137,6 +140,11 @@ class MainWindow(QMainWindow, WindowMixin):
 
         # 添加进度显示相关变量
         self.progressLabel = None
+        
+        # 添加双击放大相关变量
+        self.isZoomedIn = False  # 是否已放大
+        self.originalZoom = 100  # 原始缩放比例
+        self.zoomCenter = None   # 放大中心点
 
         # Main widgets and related state.
         self.labelDialog = LabelDialog(parent=self, listItem=self.labelHist)
@@ -222,6 +230,8 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.canvas.hideNRect.connect(self.enableCreate)
         self.canvas.hideRRect.connect(self.enableCreateRo)
+        # 添加双击放大信号连接
+        self.canvas.doubleClickZoom.connect(self.handleDoubleClickZoom)
 
         self.setCentralWidget(scroll)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
@@ -1616,6 +1626,76 @@ class MainWindow(QMainWindow, WindowMixin):
         # 更新进度显示和文件列表显示
         self.updateProgressDisplay()
         self.updateFileListDisplay()
+
+    def handleDoubleClickZoom(self, click_pos):
+        """处理双击画布的放大/缩小功能"""
+        if not self.image:
+            return
+            
+        if not self.isZoomedIn:
+            # 第一次双击：放大到200%
+            self.originalZoom = self.zoomWidget.value()
+            
+            # 获取当前缩放比例
+            current_scale = self.canvas.scale
+            
+            # 将点击位置转换为图像坐标
+            # 使用canvas的transformPos方法进行正确的坐标转换
+            image_pos = self.canvas.transformPos(QPointF(click_pos))
+            
+            # 保存图像坐标位置
+            self.zoomCenter = image_pos
+            
+            # 设置放大比例为200%
+            target_zoom = 200
+            self.setZoom(target_zoom)
+            
+            # 等待缩放完成后调整滚动位置
+            QTimer.singleShot(50, lambda: self.adjustScrollToCenter(image_pos, target_zoom))
+            
+            self.isZoomedIn = True
+            self.status("双击放大到200%，再次双击恢复原始大小")
+        else:
+            # 第二次双击：恢复原始大小
+            self.setZoom(self.originalZoom)
+            self.isZoomedIn = False
+            self.zoomCenter = None
+            self.status("已恢复到原始大小")
+
+    def adjustScrollToCenter(self, image_pos, target_zoom):
+        """调整滚动条使指定的图像位置居中显示"""
+        if not self.canvas.pixmap:
+            return
+            
+        # 获取新的缩放比例
+        new_scale = self.canvas.scale
+        
+        # 计算图像在画布中的位置（考虑缩放和偏移）
+        offset = self.canvas.offsetToCenter()
+        
+        # 将图像坐标转换为画布坐标
+        canvas_pos = (image_pos + offset) * new_scale
+        
+        # 获取滚动区域的中心点
+        scroll_area = self.centralWidget()
+        viewport_center = QPointF(
+            scroll_area.viewport().width() / 2.0,
+            scroll_area.viewport().height() / 2.0
+        )
+        
+        # 计算需要滚动的偏移量
+        scroll_offset = canvas_pos - viewport_center
+        
+        # 调整滚动条位置
+        h_bar = self.scrollBars[Qt.Horizontal]
+        v_bar = self.scrollBars[Qt.Vertical]
+        
+        # 设置新的滚动位置
+        new_h_value = max(0, min(h_bar.maximum(), int(scroll_offset.x())))
+        new_v_value = max(0, min(v_bar.maximum(), int(scroll_offset.y())))
+        
+        h_bar.setValue(new_h_value)
+        v_bar.setValue(new_v_value)
 
 
 class Settings(object):
