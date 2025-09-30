@@ -79,6 +79,15 @@ class Canvas(QWidget):
         # 添加图片拖动相关变量
         self.isPanning = False
         self.lastPanPoint = QPointF()
+        
+        # 添加特效相关变量
+        self.completionEffect = None  # 完成特效
+        self.effectTimer = QTimer()
+        self.effectTimer.timeout.connect(self.updateEffect)
+        self.effectFrame = 0
+        self.effectMaxFrames = 30  # 特效持续帧数
+        self.drawingEffect = False  # 绘制过程特效
+        self.pulseEffect = 0.0  # 脉冲效果
 
     def enterEvent(self, ev):
         self.overrideCursor(self._cursor)
@@ -116,20 +125,24 @@ class Canvas(QWidget):
         """Update line with last point and current coordinates."""
         pos = self.transformPos(ev.pos())
 
-        # 添加图片拖动的处理，改为右键拖动
-        if self.isPanning and ev.buttons() & Qt.RightButton:
+        # 优先处理拖动 - 必须在最前面，避免被其他逻辑干扰
+        if self.isPanning and (ev.buttons() & Qt.RightButton):
             # 如果是拖动模式，处理图片拖动
-            delta = QPointF(ev.pos() - self.lastPanPoint) / self.scale
-            self.scrollRequest.emit(delta.x(), Qt.Horizontal)
-            self.scrollRequest.emit(delta.y(), Qt.Vertical)
-            self.lastPanPoint = ev.pos()
+            currentPoint = QPointF(ev.pos())
+            # 计算移动差值
+            delta = currentPoint - self.lastPanPoint
+            
+            # 提高阈值，减少过于频繁的更新，避免抖动
+            if abs(delta.x()) > 1.0 or abs(delta.y()) > 1.0:
+                # 直接操作滚动条，不通过信号机制
+                self.directScrollBy(-delta.x(), -delta.y())
+                self.lastPanPoint = currentPoint
+            
+            # 只在开始拖动时设置光标，避免频繁更新
             return
-
-        self.restoreCursor()
 
         # Polygon drawing.
         if self.drawing():
-
             self.overrideCursor(CURSOR_DRAW)
             if self.current:
                 color = self.lineColor
@@ -151,14 +164,13 @@ class Canvas(QWidget):
                 self.status.emit("width is %d, height is %d." % (pos.x()-self.line[0].x(), pos.y()-self.line[0].y()))
             return
 
-        # 处理右键操作：图片拖动或形状旋转
-        if Qt.RightButton & ev.buttons():
-            # 如果不是拖动模式，且选中了顶点和可旋转形状，则执行旋转操作
-            if not self.isPanning and self.selectedVertex() and self.selectedShape and self.selectedShape.isRotated:
+        # 处理右键旋转操作（只有在不是拖动模式时）
+        if (Qt.RightButton & ev.buttons()) and not self.isPanning:
+            # 如果选中了顶点和可旋转形状，则执行旋转操作
+            if self.selectedVertex() and self.selectedShape and self.selectedShape.isRotated:
                 self.boundedRotateShape(pos)
                 self.shapeMoved.emit()
                 self.repaint()
-            # 拖动模式在前面已经处理
             self.status.emit("(%d,%d)." % (pos.x(), pos.y()))
             return
 
@@ -179,6 +191,10 @@ class Canvas(QWidget):
                 self.shapeMoved.emit()
                 self.repaint()
                 self.status.emit("(%d,%d)." % (pos.x(), pos.y()))
+            return
+
+        # 如果正在拖动，不执行悬停逻辑
+        if self.isPanning:
             return
 
         # Just hovering over the canvas, 2 posibilities:
@@ -215,6 +231,7 @@ class Canvas(QWidget):
                 self.hShape.highlightClear()
                 self.update()
             self.hVertex, self.hShape = None, None
+            self.restoreCursor()
         
         self.status.emit("(%d,%d)." % (pos.x(), pos.y()))
         
@@ -238,8 +255,8 @@ class Canvas(QWidget):
             else:
                 # 否则使用右键进行图片拖动
                 self.isPanning = True
-                self.lastPanPoint = ev.pos()
-                self.overrideCursor(CURSOR_GRAB)
+                self.lastPanPoint = QPointF(ev.pos())
+                self.overrideCursor(CURSOR_MOVE)  # 使用更合适的拖动光标
         # 移除中键拖动的处理
 
     def mouseReleaseEvent(self, ev):  
@@ -280,6 +297,9 @@ class Canvas(QWidget):
             self.repaint()
         else:
             self.selectedShape.points = [p for p in shape.points]
+            # 移动后清除最近复制标记
+            if hasattr(self.selectedShape, 'is_recently_copied'):
+                self.selectedShape.is_recently_copied = False
         self.selectedShapeCopy = None
 
     def hideBackroundShapes(self, value):
@@ -321,15 +341,18 @@ class Canvas(QWidget):
         return self.drawing() and self.current and len(self.current) > 2
 
     def mouseDoubleClickEvent(self, ev):
-        # 如果正在绘制多边形且可以闭合形状，则完成绘制
-        if self.canCloseShape() and len(self.current) > 3:
-            self.current.popPoint()
-            self.finalise()
-        else:
-            # 如果不在绘制状态，则发送双击放大信号
-            if not self.drawing():
-                # 发送双击位置给主窗口处理放大
-                self.doubleClickZoom.emit(ev.pos())
+        # 只处理左键双击
+        if ev.button() == Qt.LeftButton:
+            # 如果正在绘制多边形且可以闭合形状，则完成绘制
+            if self.canCloseShape() and len(self.current) > 3:
+                self.current.popPoint()
+                self.finalise()
+            else:
+                # 如果不在绘制状态，则发送双击放大信号
+                if not self.drawing():
+                    # 发送双击位置给主窗口处理放大
+                    self.doubleClickZoom.emit(ev.pos())
+        # 右键双击不做任何处理
 
     def selectShape(self, shape):
         self.deSelectShape()
@@ -610,20 +633,53 @@ class Canvas(QWidget):
         if self.selectedShapeCopy:
             self.selectedShapeCopy.paint(p)
 
-        # Paint rect
+        # 绘制特效
+        self.paintEffects(p)
+
+        # Paint rect with enhanced effects
         if self.current is not None and len(self.line) == 2:
             leftTop = self.line[0]
             rightBottom = self.line[1]
             rectWidth = rightBottom.x() - leftTop.x()
             rectHeight = rightBottom.y() - leftTop.y()
-            color = QColor(0, 220, 0)
-            p.setPen(color)
-            brush = QBrush(Qt.BDiagPattern)
-            p.setBrush(brush)
+            
+            # 增强的绘制效果
+            # 1. 绘制半透明填充
+            fill_color = QColor(0, 220, 0, 50)
+            p.setPen(Qt.NoPen)
+            p.setBrush(fill_color)
             p.drawRect(int(leftTop.x()), int(leftTop.y()), int(rectWidth), int(rectHeight))
-
-            #draw dialog line of rectangle
-            p.setPen(self.lineColor)
+            
+            # 2. 绘制动态边框
+            import time
+            pulse = abs(math.sin(time.time() * 3))  # 3Hz脉冲
+            border_alpha = int(150 + 105 * pulse)
+            border_color = QColor(0, 255, 100, border_alpha)
+            border_width = 2 + int(pulse * 2)
+            
+            p.setPen(QPen(border_color, border_width))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(int(leftTop.x()), int(leftTop.y()), int(rectWidth), int(rectHeight))
+            
+            # 3. 绘制角点标记
+            corner_size = 8
+            corner_color = QColor(255, 255, 0, 200)
+            p.setPen(QPen(corner_color, 3))
+            
+            # 四个角的标记
+            corners = [
+                (leftTop.x(), leftTop.y()),
+                (rightBottom.x(), leftTop.y()),
+                (rightBottom.x(), rightBottom.y()),
+                (leftTop.x(), rightBottom.y())
+            ]
+            
+            for x, y in corners:
+                p.drawLine(int(x - corner_size), int(y), int(x + corner_size), int(y))
+                p.drawLine(int(x), int(y - corner_size), int(x), int(y + corner_size))
+            
+            # 4. 绘制对角线（原有功能）
+            p.setPen(QPen(QColor(255, 255, 255, 100), 1, Qt.DashLine))
             p.drawLine(int(leftTop.x()),int(rightBottom.y()),int(rightBottom.x()),int(leftTop.y()))
 
         self.setAutoFillBackground(True)
@@ -657,14 +713,131 @@ class Canvas(QWidget):
 
     def finalise(self):
         assert self.current
-        self.current.isRotated = self.canDrawRotatedRect
-        # print(self.canDrawRotatedRect)
+        # 根据fourpoint属性设置isRotated：fourpoint=True表示旋转框，fourpoint=False表示普通框
+        self.current.isRotated = self.fourpoint
         self.current.close()
         self.shapes.append(self.current)
         self.current = None
         self.setHiding(False)
         self.newShape.emit()
+        # 触发完成特效
+        self.triggerCompletionEffect()
         self.update()
+
+    def triggerCompletionEffect(self):
+        """触发完成标注框的特效"""
+        if self.shapes:
+            # 获取刚完成的形状（最后一个）
+            completed_shape = self.shapes[-1]
+            self.completionEffect = {
+                'shape': completed_shape,
+                'type': 'completion',
+                'center': self.getShapeCenter(completed_shape)
+            }
+            self.effectFrame = 0
+            self.effectTimer.start(50)  # 50ms间隔，约20fps
+            
+            # 播放完成音效（系统提示音）
+            try:
+                import winsound
+                # 播放系统默认的"完成"音效
+                winsound.MessageBeep(winsound.MB_OK)
+            except ImportError:
+                # 如果winsound不可用，使用QApplication的beep
+                try:
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.beep()
+                except:
+                    pass  # 静默失败
+    
+    def getShapeCenter(self, shape):
+        """获取形状的中心点"""
+        if shape.points:
+            x = sum(p.x() for p in shape.points) / len(shape.points)
+            y = sum(p.y() for p in shape.points) / len(shape.points)
+            return QPointF(x, y)
+        return QPointF(0, 0)
+    
+    def updateEffect(self):
+        """更新特效动画"""
+        self.effectFrame += 1
+        if self.effectFrame >= self.effectMaxFrames:
+            self.effectTimer.stop()
+            self.completionEffect = None
+            self.effectFrame = 0
+        self.update()
+    
+    def paintEffects(self, painter):
+        """绘制各种特效"""
+        # 绘制完成特效
+        if self.completionEffect:
+            self.paintCompletionEffect(painter)
+        
+        # 绘制绘制过程中的特效
+        if self.drawing() and self.current:
+            self.paintDrawingEffect(painter)
+    
+    def paintCompletionEffect(self, painter):
+        """绘制完成标注框的特效"""
+        if not self.completionEffect:
+            return
+        
+        center = self.completionEffect['center']
+        progress = self.effectFrame / self.effectMaxFrames
+        
+        # 创建多层圆环扩散效果
+        for i in range(3):
+            # 计算每个圆环的半径和透明度
+            ring_progress = max(0, progress - i * 0.1)
+            if ring_progress <= 0:
+                continue
+                
+            radius = 20 + ring_progress * 60  # 从20像素扩散到80像素
+            alpha = int(255 * (1 - ring_progress) * 0.8)  # 透明度逐渐减少
+            
+            # 设置颜色（绿色系，表示成功）
+            color = QColor(0, 255, 100, alpha)
+            painter.setPen(QPen(color, 3))
+            painter.setBrush(Qt.NoBrush)
+            
+            # 绘制圆环
+            painter.drawEllipse(center, radius, radius)
+        
+        # 绘制中心闪烁效果
+        if progress < 0.5:
+            flash_alpha = int(255 * (1 - progress * 2) * 0.9)
+            flash_color = QColor(255, 255, 255, flash_alpha)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(flash_color)
+            painter.drawEllipse(center, 15, 15)
+    
+    def paintDrawingEffect(self, painter):
+        """绘制绘制过程中的特效"""
+        if not self.current or len(self.current.points) == 0:
+            return
+        
+        # 绘制鼠标跟随的辅助线
+        if len(self.current.points) == 1:
+            start_point = self.current.points[0]
+            
+            # 绘制从起点到鼠标的虚线
+            painter.setPen(QPen(QColor(255, 255, 0, 150), 2, Qt.DashLine))
+            
+            # 获取当前鼠标位置（需要从事件中获取，这里用一个近似方法）
+            cursor_pos = self.mapFromGlobal(QCursor.pos())
+            transformed_pos = self.transformPos(cursor_pos)
+            
+            painter.drawLine(start_point, transformed_pos)
+            
+            # 在起点绘制脉冲效果
+            self.pulseEffect += 0.2
+            pulse_radius = 8 + 4 * abs(math.sin(self.pulseEffect))
+            pulse_alpha = int(100 + 50 * abs(math.sin(self.pulseEffect)))
+            
+            pulse_color = QColor(255, 255, 0, pulse_alpha)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(pulse_color)
+            painter.drawEllipse(start_point, pulse_radius, pulse_radius)
 
     def closeEnough(self, p1, p2):
         #d = distance(p1 - p2)
@@ -894,6 +1067,46 @@ class Canvas(QWidget):
 
     def restoreCursor(self):
         QApplication.restoreOverrideCursor()
+
+    def directScrollBy(self, dx, dy):
+        """直接操作滚动条进行拖动，避免信号延迟"""
+        # 获取父窗口的滚动区域
+        parent = self.parent()
+        scroll_area = None
+        
+        # 查找QScrollArea
+        while parent:
+            if hasattr(parent, 'horizontalScrollBar') and hasattr(parent, 'verticalScrollBar'):
+                scroll_area = parent
+                break
+            parent = parent.parent()
+        
+        if scroll_area:
+            # 直接操作水平滚动条
+            h_bar = scroll_area.horizontalScrollBar()
+            if h_bar and h_bar.isVisible() and abs(dx) > 0:
+                current_value = h_bar.value()
+                new_value = current_value + int(dx)
+                new_value = max(h_bar.minimum(), min(h_bar.maximum(), new_value))
+                # 只有当值真正改变时才设置，减少不必要的更新
+                if new_value != current_value:
+                    h_bar.setValue(new_value)
+            
+            # 直接操作垂直滚动条
+            v_bar = scroll_area.verticalScrollBar()
+            if v_bar and v_bar.isVisible() and abs(dy) > 0:
+                current_value = v_bar.value()
+                new_value = current_value + int(dy)
+                new_value = max(v_bar.minimum(), min(v_bar.maximum(), new_value))
+                # 只有当值真正改变时才设置，减少不必要的更新
+                if new_value != current_value:
+                    v_bar.setValue(new_value)
+        else:
+            # 如果找不到滚动区域，回退到信号机制
+            if abs(dx) > 0:
+                self.scrollRequest.emit(dx, Qt.Horizontal)
+            if abs(dy) > 0:
+                self.scrollRequest.emit(dy, Qt.Vertical)
 
     def resetState(self):
         self.restoreCursor()

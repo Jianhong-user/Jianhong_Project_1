@@ -68,6 +68,8 @@ def build_exe(onefile=False, icon_path=None):
         "--add-data=icons;icons",  # 添加图标文件
         "--add-data=libs;libs",  # 添加libs目录
         "--add-data=resources.py;.",  # 添加resources.py文件到根目录
+        "--add-data=roLabelImg使用说明.md;.",  # 添加使用说明文档
+        "--add-data=README.md;.",  # 添加README文档
         "--workpath=build",  # 指定构建工作目录
         "--distpath=dist",  # 指定输出目录
         "--paths=libs",  # 添加libs目录到Python路径
@@ -169,10 +171,30 @@ def build_exe(onefile=False, icon_path=None):
                 print(f"使用自定义图标: {icon_path}")
         else:
             print(f"警告: 图标文件 {icon_path} 不存在，将使用默认图标")
-            # 不设置图标，使用默认
+            # 尝试使用默认图标
+            default_icon = "icons/Click.ico"
+            if os.path.exists(default_icon):
+                cmd.append(f"--icon={default_icon}")
+                print(f"使用默认图标: {default_icon}")
     else:
-        # 不设置自定义图标
-        pass
+        # 尝试使用默认图标
+        default_icon = "icons/Click.ico"
+        if os.path.exists(default_icon):
+            cmd.append(f"--icon={default_icon}")
+            print(f"使用默认图标: {default_icon}")
+        else:
+            # 尝试转换GIF图标
+            gif_icon = "icons/Click.gif"
+            if os.path.exists(gif_icon):
+                print(f"找到GIF图标: {gif_icon}，尝试转换为ICO格式...")
+                ico_path = convert_to_ico(gif_icon)
+                if ico_path:
+                    cmd.append(f"--icon={ico_path}")
+                    print(f"使用转换后的ICO图标: {ico_path}")
+                else:
+                    print("无法转换图标，将使用默认图标")
+            else:
+                print("未找到图标文件，将使用系统默认图标")
     
     # 如果选择单文件模式，添加--onefile参数
     if onefile:

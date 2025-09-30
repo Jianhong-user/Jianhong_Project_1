@@ -107,6 +107,27 @@ class HashableQListWidgetItem(QListWidgetItem):
     def __hash__(self):
         return hash(id(self))
 
+class LabelListWidget(QListWidget):
+    """自定义标签列表，支持Delete键批量删除"""
+    
+    def __init__(self, parent=None):
+        super(LabelListWidget, self).__init__(parent)
+        self.parent_window = None
+    
+    def setParentWindow(self, parent_window):
+        """设置父窗口引用"""
+        self.parent_window = parent_window
+    
+    def keyPressEvent(self, event):
+        """处理键盘事件"""
+        if event.key() == Qt.Key_Delete and self.parent_window:
+            # 使用智能删除方法
+            self.parent_window.smartDelete()
+            return
+        
+        # 调用父类的键盘事件处理
+        super(LabelListWidget, self).keyPressEvent(event)
+
 
 class MainWindow(QMainWindow, WindowMixin):
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = list(range(3))
@@ -129,6 +150,12 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.isEnableCreate = True
         self.isEnableCreateRo = True
+        
+        # 初始化随机颜色映射机制
+        self.initRandomColorMapping()
+        
+        # 初始化撤销系统
+        self.initUndoSystem()
 
         # Enble auto saving if pressing next
         self.autoSaving = True
@@ -227,7 +254,8 @@ class MainWindow(QMainWindow, WindowMixin):
         listLayout.addWidget(useDefautLabelContainer)
 
         # Create and add a widget for showing current label items
-        self.labelList = QListWidget()
+        self.labelList = LabelListWidget()
+        self.labelList.setParentWindow(self)  # 设置父窗口引用
         # 设置为多选模式
         self.labelList.setSelectionMode(QAbstractItemView.ExtendedSelection)
         labelListContainer = QWidget()
@@ -274,7 +302,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.canvas.scrollRequest.connect(self.scrollRequest)
 
         self.canvas.newShape.connect(self.newShape)
-        self.canvas.shapeMoved.connect(self.setDirty)
+        self.canvas.shapeMoved.connect(self.onShapeMoved)
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.status.connect(self.status)
@@ -348,11 +376,24 @@ class MainWindow(QMainWindow, WindowMixin):
 
         # delete = action('Delete\nRectBox', self.deleteSelectedShape,
         #                 'Delete', 'delete', u'Delete', enabled=False)
-        delete = action('Delete\nRectBox', self.deleteSelectedShape, 'Delete', 'delete', u'Delete', enabled=False)
+        delete = action('Delete\nRectBox', self.smartDelete, 'Delete', 'delete', u'Delete', enabled=False)
         delete.setShortcuts(["Delete", "F"])
         copy = action('&Duplicate\nRectBox', self.copySelectedShape,
                       'Ctrl+D', 'copy', u'Create a duplicate of the selected Box',
                       enabled=False)
+
+        undo = action('&Undo', self.undo,
+                      'Ctrl+Z', 'undo', u'Undo the last action',
+                      enabled=True)
+
+        # 批量操作动作
+        selectAll = action('全选标签', self.selectAllLabels,
+                          'Ctrl+A', 'select_all', u'Select all labels',
+                          enabled=True)
+        
+        batchDelete = action('批量删除', self.batchDeleteLabels,
+                            'Ctrl+Shift+D', 'batch_delete', u'Delete selected labels',
+                            enabled=False)
 
         advancedMode = action('&Advanced Mode', self.toggleAdvancedMode,
                               'Ctrl+Shift+P', 'expert', u'Switch to advanced mode',
@@ -434,7 +475,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         # Lavel list context menu.
         labelMenu = QMenu()
-        addActions(labelMenu, (edit, delete))
+        addActions(labelMenu, (edit, delete, None, selectAll, batchDelete))
         self.labelList.setContextMenuPolicy(Qt.CustomContextMenu)
         self.labelList.customContextMenuRequested.connect(
             self.popLabelListMenu)
@@ -442,7 +483,8 @@ class MainWindow(QMainWindow, WindowMixin):
         # Store actions for further handling.
         self.actions = struct(save=save, saveAs=saveAs, open=open, close=close,
                               lineColor=color1, fillColor=color2,
-                              create=create, createRo=createRo, delete=delete, edit=edit, copy=copy,
+                              create=create, createRo=createRo, delete=delete, edit=edit, copy=copy, undo=undo,
+                              selectAll=selectAll, batchDelete=batchDelete,
                               createMode=createMode, editMode=editMode, advancedMode=advancedMode,
                               autoAnnotate=autoAnnotate, deleteOverlapping=deleteOverlapping,
                               openNextImg=openNextImg, openPrevImg=openPrevImg,
@@ -454,7 +496,7 @@ class MainWindow(QMainWindow, WindowMixin):
                               fileMenuActions=(
                                   open, opendir, save, saveAs, close, quit),
                               beginner=(), advanced=(),
-                              editMenu=(edit, copy, delete,
+                              editMenu=(undo, None, edit, copy, delete,
                                         None, color1, color2),
                               beginnerContext=(create, edit, copy, delete),
                               advancedContext=(createMode, editMode, edit, copy,
@@ -782,11 +824,6 @@ class MainWindow(QMainWindow, WindowMixin):
         self.normalBoxesLabel.setStyleSheet("color: #F18F01;")
         currentImageLayout.addWidget(self.normalBoxesLabel)
         
-        # 困难样本数量
-        self.difficultBoxesLabel = QLabel("困难样本: 0")
-        self.difficultBoxesLabel.setStyleSheet("color: #C73E1D;")
-        currentImageLayout.addWidget(self.difficultBoxesLabel)
-        
         currentImageGroup.setLayout(currentImageLayout)
         statsLayout.addWidget(currentImageGroup)
         
@@ -891,12 +928,10 @@ class MainWindow(QMainWindow, WindowMixin):
             total_boxes = len(shapes)
             rotated_boxes = sum(1 for shape in shapes if hasattr(shape, 'isRotated') and shape.isRotated)
             normal_boxes = total_boxes - rotated_boxes
-            difficult_boxes = sum(1 for shape in shapes if hasattr(shape, 'difficult') and shape.difficult)
             
             self.totalBoxesLabel.setText(f"标注框总数: {total_boxes}")
             self.rotatedBoxesLabel.setText(f"旋转框: {rotated_boxes}")
             self.normalBoxesLabel.setText(f"普通框: {normal_boxes}")
-            self.difficultBoxesLabel.setText(f"困难样本: {difficult_boxes}")
             
             # 更新标签分类统计
             self.updateLabelStatistics(shapes)
@@ -904,7 +939,6 @@ class MainWindow(QMainWindow, WindowMixin):
             self.totalBoxesLabel.setText("标注框总数: 0")
             self.rotatedBoxesLabel.setText("旋转框: 0")
             self.normalBoxesLabel.setText("普通框: 0")
-            self.difficultBoxesLabel.setText("困难样本: 0")
             self.clearLabelStatistics()
         
         # 项目整体统计
@@ -1047,29 +1081,55 @@ class MainWindow(QMainWindow, WindowMixin):
     def showBuiltinHelp(self):
         """显示内置帮助对话框"""
         help_text = """
-# roLabelImg 使用帮助
+# roLabelImg 增强版使用帮助
 
-## 基本操作
-- W: 创建旋转矩形
-- Ctrl+U: 创建普通矩形
-- D: 下一张图片
-- A: 上一张图片
-- Del: 删除选中的标注框
-- Ctrl+S: 保存
-- Ctrl+Shift+A: 切换高级/初学者模式
+## 🎯 基本操作
+• W: 创建旋转矩形框 (核心功能)
+• E: 创建普通矩形框
+• D: 下一张图片 (自动保存)
+• A: 上一张图片 (自动保存)
+• Delete/F: 智能删除 (单个/批量)
+• Ctrl+S: 保存标注
+• Ctrl+Z: 撤销操作
 
-## 标注操作
-- 左键点击: 选择标注框
-- 右键拖动: 移动图片
-- 鼠标滚轮: 缩放图片
-- 双击: 放大到鼠标位置
+## 🗂️ 批量操作 (新功能)
+• Ctrl+A: 全选标签
+• Ctrl+点击: 多选标签
+• Shift+点击: 范围选择标签
+• Delete: 批量删除选中标签
+• Ctrl+Shift+D: 批量删除快捷键
 
-## 旋转矩形操作
-- Z/X: 顺时针微调旋转
-- C/V: 逆时针微调旋转
-- 右键拖动顶点: 旋转矩形
+## 📁 文件操作
+• Ctrl+O: 打开图像
+• Ctrl+U: 打开目录
+• Ctrl+R: 更改保存目录
+• Ctrl+Q: 退出程序
 
-更多详细信息请查看项目目录下的使用说明文档。
+## 🎨 标注操作
+• 左键拖动: 绘制/移动标注框
+• 右键拖动: 移动图片视图
+• 鼠标滚轮: 缩放图片
+• 双击: 编辑标签
+
+## 🔄 旋转矩形操作
+• Z: 顺时针旋转 (大角度)
+• X: 顺时针旋转 (小角度)
+• C: 逆时针旋转 (小角度)
+• V: 逆时针旋转 (大角度)
+• 右键拖动顶点: 自由旋转
+
+## 🔍 视图控制
+• Ctrl++/Ctrl+-: 缩放图像
+• Ctrl+F: 适应窗口
+• R/N: 切换旋转框/普通框显示
+
+## ✨ 新增特性
+• 标注特效: 绘制过程动态反馈
+• 随机颜色: 每次启动随机分配标签颜色
+• 统计面板: 实时显示标注框数量
+• 自动保存: 切换图片时自动保存
+
+按 Ctrl+T 可随时查看完整使用说明文档。
         """
         
         msg = QMessageBox(self)
@@ -1081,19 +1141,19 @@ class MainWindow(QMainWindow, WindowMixin):
 
     # create Normal Rect
     def createShape(self):
-        # assert self.beginner()  # 移除这行断言
+        # E键：创建普通矩形框
         self.canvas.setEditing(False)
         self.actions.create.setEnabled(False)
         self.actions.createRo.setEnabled(True)
-        self.canvas.fourpoint = False
+        self.canvas.fourpoint = False  # 普通框：不使用四点模式
 
     # create Rotated Rect
     def createRoShape(self):
-        # assert self.beginner()  # 移除这行断言
+        # W键：创建旋转矩形框
         self.canvas.setEditing(False)
         self.actions.create.setEnabled(True)
         self.actions.createRo.setEnabled(False)
-        self.canvas.fourpoint = True
+        self.canvas.fourpoint = True  # 旋转框：使用四点模式
 
     def toggleDrawingSensitive(self, drawing=True):
         """In the middle of drawing, toggling between modes should be disabled."""
@@ -1193,6 +1253,13 @@ class MainWindow(QMainWindow, WindowMixin):
             pass
 
     # React to canvas signals.
+    def onShapeMoved(self):
+        """处理形状移动后的操作"""
+        self.setDirty()
+        # 更新重叠检查和画布显示
+        self.updateOverlapWarning()
+        self.canvas.update()
+
     def shapeSelectionChanged(self, selected=False):
         if self._noSelectionSlot:
             self._noSelectionSlot = False
@@ -1210,7 +1277,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.actions.shapeLineColor.setEnabled(selected)
         self.actions.shapeFillColor.setEnabled(selected)
 
-    def addLabel(self, shape):
+    def addLabel(self, shape, save_undo=True):
         shape.paintLabel = True
         item = HashableQListWidgetItem(shape.label)
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -1225,11 +1292,20 @@ class MainWindow(QMainWindow, WindowMixin):
             action.setEnabled(True)
         self.updateStatistics()
         self.updateOverlapWarning()
+        
+        # 保存撤销操作
+        if save_undo:
+            self.saveUndoAction("添加标签", shape)
 
-    def remLabel(self, shape):
+    def remLabel(self, shape, save_undo=True):
         if shape is None:
             # print('rm empty label')
             return
+        
+        # 保存撤销状态（在删除之前）
+        if save_undo:
+            self.saveStateForUndo("删除标签")
+            
         item = self.shapesToItems[shape]
         self.labelList.takeItem(self.labelList.row(item))
         del self.shapesToItems[shape]
@@ -1257,7 +1333,7 @@ class MainWindow(QMainWindow, WindowMixin):
                 shape.fill_color = QColor(*fill_color) if fill_color else QColor(shape.line_color.red(), shape.line_color.green(), shape.line_color.blue(), 128)
                 
             s.append(shape)
-            self.addLabel(shape)
+            self.addLabel(shape, save_undo=False)  # 加载标签时不保存撤销操作
 
         self.canvas.loadShapes(s)
         self.updateStatistics()
@@ -1277,12 +1353,12 @@ class MainWindow(QMainWindow, WindowMixin):
                         if s.fill_color != self.fillColor else None,
                         points=[(p.x(), p.y()) for p in s.points],
                        # add chris
-                        difficult = s.difficult,
+                        difficult = s.difficult if hasattr(s, 'difficult') else False,
                         # You Hao 2017/06/21
                         # add for rotated bounding box
-                        direction = s.direction,
-                        center = s.center,
-                        isRotated = s.isRotated)
+                        direction = s.direction if hasattr(s, 'direction') else 0,
+                        center = s.center if hasattr(s, 'center') and s.center is not None else None,
+                        isRotated = s.isRotated if hasattr(s, 'isRotated') else False)
 
         shapes = [format_shape(shape) for shape in self.canvas.shapes]
         # Can add differrent annotation formats here
@@ -1308,6 +1384,9 @@ class MainWindow(QMainWindow, WindowMixin):
         # 添加自动保存功能
         self.setDirty()
         self.saveFile()
+        
+        # 延迟更新重叠检查，给用户时间移动复制的框
+        # 注意：重叠检查会在用户移动框或其他操作时自动触发
 
     def labelSelectionChanged(self):
         items = self.labelList.selectedItems()
@@ -1328,6 +1407,9 @@ class MainWindow(QMainWindow, WindowMixin):
             # 当没有选中任何标签时，检查是否有选中的shape
             has_shape_selection = self.canvas.selectedShape is not None
             self.actions.edit.setEnabled(has_shape_selection)
+        
+        # 更新批量删除按钮状态
+        self.updateBatchDeleteState()
 
     def labelItemChanged(self, item):
         shape = self.itemsToShapes[item]
@@ -1374,22 +1456,34 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def scrollRequest(self, delta, orientation):
         # 处理鼠标拖动时的滚动请求
-        if isinstance(delta, float):
-            # 当delta是浮点数时，表示是从拖动操作传来的像素级别滚动
-            bar = self.scrollBars[orientation]
-            value = bar.value() - delta
-            bar.setValue(value)
+        bar = self.scrollBars[orientation]
+        
+        # 统一处理所有类型的滚动请求
+        if abs(delta) < 100:  # 如果是小的增量值，认为是拖动操作
+            # 拖动操作：直接使用delta值
+            current_value = bar.value()
+            new_value = current_value - delta
+            
+            # 确保值在有效范围内
+            new_value = max(bar.minimum(), min(bar.maximum(), new_value))
+            bar.setValue(int(new_value))
         else:
-            # 原有的滚轮滚动处理
+            # 滚轮操作：使用原有的处理方式
             units = - delta / (8 * 7.5)
-            bar = self.scrollBars[orientation]
-            bar.setValue(bar.value() + bar.singleStep() * units)
+            bar.setValue(int(bar.value() + bar.singleStep() * units))
 
     def setZoom(self, value):
         self.actions.fitWidth.setChecked(False)
         self.actions.fitWindow.setChecked(False)
         self.zoomMode = self.MANUAL_ZOOM
-        self.zoomWidget.setValue(value)
+        self.zoomWidget.setValue(int(value))
+        
+        # 如果通过滚轮或其他方式改变缩放，重置双击状态
+        # 但保留originalZoom，以便双击时能正确恢复
+        if hasattr(self, 'isZoomedIn') and self.isZoomedIn:
+            # 如果当前是通过双击放大的状态，且缩放级别被改变，则重置状态
+            if int(value) != 200:  # 200是双击放大的目标值
+                self.isZoomedIn = False
 
     def addZoom(self, increment=10):
         self.setZoom(self.zoomWidget.value() + increment)
@@ -1397,7 +1491,7 @@ class MainWindow(QMainWindow, WindowMixin):
     def zoomRequest(self, delta):
         units = delta / (8 * 15)
         scale = 10
-        self.addZoom(scale * units)
+        self.addZoom(int(scale * units))
 
     def setFitWindow(self, value=True):
         if value:
@@ -1418,6 +1512,7 @@ class MainWindow(QMainWindow, WindowMixin):
     def loadFile(self, filePath=None):
         """Load the specified file, or the last opened file if None."""
         self.resetState()
+        self.clearUndoStack()  # 切换图片时清空撤销栈
         self.canvas.setEnabled(False)
         if filePath is None:
             filePath = self.settings.get('filename')
@@ -1653,6 +1748,13 @@ class MainWindow(QMainWindow, WindowMixin):
             self.saveFile()
 
     def openPrevImg(self, _value=False):
+        # 添加自动保存逻辑，与openNextImg保持一致
+        if self.autoSaving is True and self.defaultSaveDir is not None:
+            if self.dirty is True: 
+                self.dirty = False
+                self.canvas.verified = True               
+                self.saveFile()
+
         if not self.mayContinue():
             return
 
@@ -1890,8 +1992,43 @@ class MainWindow(QMainWindow, WindowMixin):
             self.canvas.update()
             self.setDirty()
 
+    def smartDelete(self):
+        """智能删除方法：根据选择情况决定单个删除还是批量删除"""
+        # 检查标签列表中是否有多个选中项
+        selected_items = self.labelList.selectedItems()
+        
+        if len(selected_items) > 1:
+            # 如果选中了多个标签，执行批量删除
+            self.batchDeleteLabels()
+        elif len(selected_items) == 1:
+            # 如果只选中了一个标签，检查是否与画布选中的形状一致
+            item = selected_items[0]
+            if item in self.itemsToShapes:
+                shape = self.itemsToShapes[item]
+                if shape == self.canvas.selectedShape:
+                    # 如果一致，执行单个删除
+                    self.deleteSelectedShape()
+                else:
+                    # 如果不一致，先选中该形状再删除
+                    self.canvas.selectShape(shape)
+                    self.deleteSelectedShape()
+            else:
+                self.deleteSelectedShape()
+        else:
+            # 如果标签列表中没有选中项，但画布中有选中的形状，删除画布中的形状
+            if self.canvas.selectedShape:
+                self.deleteSelectedShape()
+
     def deleteSelectedShape(self):
-        self.remLabel(self.canvas.deleteSelected())
+        # 在删除前保存撤销操作
+        if self.canvas.selectedShape:
+            self.saveUndoAction("删除标签", self.canvas.selectedShape)
+        
+        # 删除选中的形状
+        deleted_shape = self.canvas.deleteSelected()
+        if deleted_shape:
+            self.remLabel(deleted_shape, save_undo=False)  # 不再保存撤销操作，因为已经保存了
+        
         self.setDirty()
         if self.noShapes():
             for action in self.actions.onShapesPresent:
@@ -1905,6 +2042,61 @@ class MainWindow(QMainWindow, WindowMixin):
             if item in self.itemsToShapes:
                 selected_shapes.append(self.itemsToShapes[item])
         return selected_shapes
+    
+    def selectAllLabels(self):
+        """全选标签列表中的所有项目"""
+        self.labelList.selectAll()
+        self.updateBatchDeleteState()
+    
+    def batchDeleteLabels(self):
+        """批量删除选中的标签"""
+        selected_items = self.labelList.selectedItems()
+        if not selected_items:
+            self.status("没有选中的标签")
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(self, '批量删除确认', 
+                                   f'确定要删除选中的 {len(selected_items)} 个标签吗？',
+                                   QMessageBox.Yes | QMessageBox.No, 
+                                   QMessageBox.No)
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 保存撤销状态
+        self.saveUndoAction("批量删除标签")
+        
+        # 获取要删除的形状
+        shapes_to_delete = []
+        for item in selected_items:
+            if item in self.itemsToShapes:
+                shapes_to_delete.append(self.itemsToShapes[item])
+        
+        # 批量删除
+        for shape in shapes_to_delete:
+            # 从画布中移除
+            if shape in self.canvas.shapes:
+                self.canvas.shapes.remove(shape)
+            # 从标签列表中移除
+            self.remLabel(shape, save_undo=False)  # 不重复保存撤销状态
+        
+        # 更新界面
+        self.canvas.update()
+        self.updateStatistics()
+        self.updateBatchDeleteState()
+        self.setDirty()
+        
+        self.status(f"已删除 {len(shapes_to_delete)} 个标签")
+    
+    def updateBatchDeleteState(self):
+        """更新批量删除按钮的状态"""
+        selected_count = len(self.labelList.selectedItems())
+        self.actions.batchDelete.setEnabled(selected_count > 0)
+        
+        # 更新状态栏显示选中数量
+        if selected_count > 0:
+            self.status(f"已选中 {selected_count} 个标签")
         
     def batchDeleteShapes(self):
         """批量删除选中的形状"""
@@ -1942,35 +2134,26 @@ class MainWindow(QMainWindow, WindowMixin):
             self.setDirty()
 
     def getLabelColor(self, label):
-        """根据标签名称生成唯一的颜色"""
-        # 定义一组美观的颜色调色板
-        beautiful_colors = [
-            (255, 99, 132),   # 粉红色
-            (54, 162, 235),   # 蓝色
-            (255, 205, 86),   # 黄色
-            (75, 192, 192),   # 青色
-            (153, 102, 255),  # 紫色
-            (255, 159, 64),   # 橙色
-            (199, 199, 199),  # 灰色
-            (83, 102, 255),   # 靛蓝色
-            (255, 99, 255),   # 洋红色
-            (99, 255, 132),   # 绿色
-            (255, 206, 84),   # 金色
-            (46, 204, 113),   # 翠绿色
-            (155, 89, 182),   # 紫罗兰色
-            (52, 152, 219),   # 天蓝色
-            (241, 196, 15),   # 向日葵色
-            (230, 126, 34),   # 胡萝卜色
-            (231, 76, 60),    # 红色
-            (149, 165, 166),  # 混凝土色
-        ]
+        """根据标签名称生成随机颜色（每次启动应用程序时重新随机分配）"""
+        # 如果标签已经有分配的颜色，直接返回
+        if label in self.label_color_mapping:
+            r, g, b = self.label_color_mapping[label]
+            return QColor(r, g, b, 128)
         
-        # 使用标签文本的哈希值选择颜色，确保相同标签总是获得相同颜色
-        hash_object = hashlib.md5(label.encode())
-        hash_value = int(hash_object.hexdigest(), 16)
-        color_index = hash_value % len(beautiful_colors)
+        # 为新标签分配颜色
+        if self.color_index < len(self.beautiful_colors):
+            # 使用预定义的颜色
+            r, g, b = self.beautiful_colors[self.color_index]
+            self.color_index += 1
+        else:
+            # 如果预定义颜色用完了，生成随机颜色
+            import random
+            r = random.randint(50, 255)
+            g = random.randint(50, 255)
+            b = random.randint(50, 255)
         
-        r, g, b = beautiful_colors[color_index]
+        # 保存标签颜色映射
+        self.label_color_mapping[label] = (r, g, b)
         
         # 返回带有一定透明度的颜色
         return QColor(r, g, b, 128)
@@ -2086,10 +2269,19 @@ class MainWindow(QMainWindow, WindowMixin):
         """处理双击画布的放大/缩小功能"""
         if not self.image:
             return
-            
-        if not self.isZoomedIn:
+        
+        current_zoom = self.zoomWidget.value()
+        
+        # 检查是否已经处于放大状态（通过缩放级别判断，而不仅仅依赖isZoomedIn标志）
+        if not self.isZoomedIn and current_zoom <= 100:
             # 第一次双击：放大到200%
-            self.originalZoom = self.zoomWidget.value()
+            self.originalZoom = current_zoom
+            
+            # 保存当前的滚动位置
+            self.originalScrollPosition = {
+                'horizontal': self.scrollBars[Qt.Horizontal].value(),
+                'vertical': self.scrollBars[Qt.Vertical].value()
+            }
             
             # 获取当前缩放比例
             current_scale = self.canvas.scale
@@ -2111,11 +2303,216 @@ class MainWindow(QMainWindow, WindowMixin):
             self.isZoomedIn = True
             self.status("双击放大到200%，再次双击恢复原始大小")
         else:
-            # 第二次双击：恢复原始大小
-            self.setZoom(self.originalZoom)
+            # 第二次双击或已经放大的情况：恢复到原始大小
+            # 如果没有保存原始缩放级别，则恢复到100%
+            restore_zoom = getattr(self, 'originalZoom', 100)
+            self.setZoom(restore_zoom)
+            
+            # 恢复原始滚动位置
+            if hasattr(self, 'originalScrollPosition'):
+                QTimer.singleShot(50, self.restoreOriginalScrollPosition)
+            
             self.isZoomedIn = False
             self.zoomCenter = None
             self.status("已恢复到原始大小")
+
+    def restoreOriginalScrollPosition(self):
+        """恢复双击放大前的滚动位置"""
+        if hasattr(self, 'originalScrollPosition'):
+            # 恢复水平滚动位置
+            h_bar = self.scrollBars[Qt.Horizontal]
+            h_value = self.originalScrollPosition['horizontal']
+            h_value = max(h_bar.minimum(), min(h_bar.maximum(), h_value))
+            h_bar.setValue(h_value)
+            
+            # 恢复垂直滚动位置
+            v_bar = self.scrollBars[Qt.Vertical]
+            v_value = self.originalScrollPosition['vertical']
+            v_value = max(v_bar.minimum(), min(v_bar.maximum(), v_value))
+            v_bar.setValue(v_value)
+            
+            # 清除保存的位置信息
+        del self.originalScrollPosition
+
+    def initRandomColorMapping(self):
+        """初始化随机颜色映射机制"""
+        import random
+        import time
+        
+        # 使用当前时间作为随机种子，确保每次启动都有不同的颜色分配
+        random.seed(int(time.time()))
+        
+        # 定义一组美观的颜色调色板
+        self.beautiful_colors = [
+            (255, 99, 132),   # 粉红色
+            (54, 162, 235),   # 蓝色
+            (255, 205, 86),   # 黄色
+            (75, 192, 192),   # 青色
+            (153, 102, 255),  # 紫色
+            (255, 159, 64),   # 橙色
+            (199, 199, 199),  # 灰色
+            (83, 102, 255),   # 靛蓝色
+            (255, 99, 255),   # 洋红色
+            (99, 255, 132),   # 绿色
+            (255, 206, 84),   # 金色
+            (46, 204, 113),   # 翠绿色
+            (155, 89, 182),   # 紫罗兰色
+            (52, 152, 219),   # 天蓝色
+            (241, 196, 15),   # 向日葵色
+            (230, 126, 34),   # 胡萝卜色
+            (231, 76, 60),    # 红色
+            (149, 165, 166),  # 混凝土色
+            (26, 188, 156),   # 绿松石色
+            (142, 68, 173),   # 紫水晶色
+            (39, 174, 96),    # 祖母绿色
+            (41, 128, 185),   # 彼得河色
+            (243, 156, 18),   # 橙色
+            (211, 84, 0),     # 南瓜色
+            (192, 57, 43),    # 石榴红色
+            (127, 140, 141),  # 石墨色
+        ]
+        
+        # 打乱颜色顺序，确保随机性
+        random.shuffle(self.beautiful_colors)
+        
+        # 初始化标签颜色映射字典
+        self.label_color_mapping = {}
+        self.color_index = 0
+
+    def initUndoSystem(self):
+        """初始化撤销系统"""
+        self.undo_stack = []  # 撤销栈
+        self.max_undo_steps = 20  # 最大撤销步数
+    
+    def clearUndoStack(self):
+        """清空撤销栈"""
+        self.undo_stack.clear()
+        
+    def saveUndoAction(self, action_type, shape=None, shape_data=None):
+        """保存撤销操作信息"""
+        if shape:
+            # 保存形状的完整信息
+            shape_info = {
+                'label': shape.label,
+                'points': [QPointF(p.x(), p.y()) for p in shape.points],
+                'line_color': QColor(shape.line_color),
+                'fill_color': QColor(shape.fill_color),
+                'difficult': shape.difficult if hasattr(shape, 'difficult') else False,
+                'isRotated': shape.isRotated if hasattr(shape, 'isRotated') else False,
+                'direction': shape.direction if hasattr(shape, 'direction') else 0,
+                'center': shape.center if hasattr(shape, 'center') else None
+            }
+        else:
+            shape_info = shape_data
+        
+        # 创建撤销操作
+        undo_action = {
+            'action_type': action_type,
+            'shape_info': shape_info
+        }
+        
+        # 添加到撤销栈
+        self.undo_stack.append(undo_action)
+        
+        # 限制撤销栈大小
+        if len(self.undo_stack) > self.max_undo_steps:
+            self.undo_stack.pop(0)
+    
+    def undo(self):
+        """执行撤销操作"""
+        if not self.undo_stack:
+            self.status("没有可撤销的操作")
+            return
+        
+        # 获取最后一个操作
+        last_action = self.undo_stack.pop()
+        action_type = last_action['action_type']
+        shape_info = last_action['shape_info']
+        
+        if action_type == "添加标签":
+            # 撤销添加：找到并删除最后添加的形状
+            if self.canvas.shapes:
+                last_shape = self.canvas.shapes[-1]
+                self.canvas.shapes.remove(last_shape)
+                self.remLabel(last_shape, save_undo=False)
+                self.canvas.update()
+                self.status("已撤销添加操作")
+        
+        elif action_type == "删除标签":
+            # 撤销删除：重新创建被删除的形状
+            if shape_info:
+                restored_shape = self.createShapeFromInfo(shape_info)
+                self.canvas.shapes.append(restored_shape)
+                self.addLabel(restored_shape, save_undo=False)
+                self.canvas.update()
+                self.status("已撤销删除操作")
+        
+        else:
+             self.status(f"已撤销操作: {action_type}")
+    
+    def createShapeFromInfo(self, shape_info):
+        """从保存的信息重新创建形状"""
+        # 创建新形状
+        if shape_info.get('isRotated', False):
+            shape = Shape(label=shape_info['label'], line_color=shape_info['line_color'])
+            shape.isRotated = True
+        else:
+            shape = Shape(label=shape_info['label'], line_color=shape_info['line_color'])
+        
+        # 设置形状属性
+        shape.points = shape_info['points']
+        shape.line_color = shape_info['line_color']
+        shape.fill_color = shape_info['fill_color']
+        shape.difficult = shape_info.get('difficult', False)
+        shape.direction = shape_info.get('direction', 0)
+        if shape_info.get('center'):
+            shape.center = shape_info['center']
+        
+        return shape
+    
+    def clearAllShapes(self):
+        """清空所有形状"""
+        # 清空画布上的形状
+        self.canvas.shapes = []
+        self.canvas.selectedShape = None
+        
+        # 清空标签列表
+        self.labelList.clear()
+        self.itemsToShapes.clear()
+        self.shapesToItems.clear()
+        
+        # 更新界面
+        self.canvas.update()
+        self.updateStatistics()
+        self.updateOverlapWarning()
+    
+    def restoreShapesFromState(self, shapes_data):
+        """从状态数据恢复形状"""
+        # 清空当前形状
+        self.clearAllShapes()
+        
+        # 恢复形状
+        for shape_data in shapes_data:
+            # 创建新形状
+            if shape_data.get('isRotated', False):
+                shape = Shape(label=shape_data['label'], line_color=shape_data['line_color'])
+                shape.isRotated = True
+            else:
+                shape = Shape(label=shape_data['label'], line_color=shape_data['line_color'])
+            
+            # 设置形状属性
+            shape.points = shape_data['points']
+            shape.line_color = shape_data['line_color']
+            shape.fill_color = shape_data['fill_color']
+            shape.difficult = shape_data.get('difficult', False)
+            shape.direction = shape_data.get('direction', 0)
+            
+            # 添加到画布和标签列表
+            self.canvas.shapes.append(shape)
+            self.addLabel(shape, save_undo=False)  # 恢复时不保存撤销状态
+        
+        # 更新界面
+        self.canvas.update()
 
     def checkOverlappingBoxes(self):
         """检测重叠的标注框"""
@@ -2125,6 +2522,14 @@ class MainWindow(QMainWindow, WindowMixin):
         shapes = self.canvas.shapes
         overlapping_pairs = []
         
+        # 首先清除所有形状的重叠状态
+        for shape in shapes:
+            if hasattr(shape, 'is_overlapping'):
+                shape.is_overlapping = False
+            # 清除最近复制标记（在用户移动框后）
+            if hasattr(shape, 'is_recently_copied'):
+                shape.is_recently_copied = False
+        
         # 检查每对标注框是否重叠
         for i in range(len(shapes)):
             for j in range(i + 1, len(shapes)):
@@ -2133,12 +2538,22 @@ class MainWindow(QMainWindow, WindowMixin):
                 
                 if self.isOverlapping(shape1, shape2):
                     overlapping_pairs.append((i, j, shape1, shape2))
+                    # 标记重叠的形状
+                    if hasattr(shape1, 'is_overlapping'):
+                        shape1.is_overlapping = True
+                    if hasattr(shape2, 'is_overlapping'):
+                        shape2.is_overlapping = True
         
         return overlapping_pairs
     
     def isOverlapping(self, shape1, shape2):
         """判断两个标注框是否重叠"""
         try:
+            # 排除最近复制的框，避免误判
+            if (hasattr(shape1, 'is_recently_copied') and shape1.is_recently_copied) or \
+               (hasattr(shape2, 'is_recently_copied') and shape2.is_recently_copied):
+                return False
+            
             # 获取两个形状的边界矩形
             rect1 = shape1.boundingRect()
             rect2 = shape2.boundingRect()

@@ -105,8 +105,14 @@ class LabelFile(object):
         center = shape['center']
         direction = shape['direction']
 
-        cx = center.x()
-        cy = center.y()
+        # 如果center为None，计算中心点
+        if center is None:
+            # 计算四个点的中心
+            cx = sum(p[0] for p in points) / len(points)
+            cy = sum(p[1] for p in points) / len(points)
+        else:
+            cx = center.x()
+            cy = center.y()
         
         w = math.sqrt((points[0][0]-points[1][0]) ** 2 +
             (points[0][1]-points[1][1]) ** 2)

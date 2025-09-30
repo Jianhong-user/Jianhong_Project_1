@@ -32,6 +32,10 @@ DEFAULT_VERTEX_FILL_COLOR = QColor.fromHsv(180, int(255 * 0.85), int(255 * 0.85)
 # 鲜艳的黄色高亮顶点 - HSV(55, 90%, 90%)
 DEFAULT_HVERTEX_FILL_COLOR = QColor.fromHsv(55, int(255 * 0.90), int(255 * 0.90), 255)
 
+# 重叠框的高亮颜色 - 鲜艳的红色 HSV(0, 100%, 100%)
+DEFAULT_OVERLAP_LINE_COLOR = QColor.fromHsv(0, int(255 * 1.0), int(255 * 1.0), 255)
+DEFAULT_OVERLAP_FILL_COLOR = QColor.fromHsv(0, int(255 * 0.8), int(255 * 0.9), 120)
+
 
 class Shape(object):
     P_SQUARE, P_ROUND = range(2)
@@ -46,6 +50,8 @@ class Shape(object):
     select_fill_color = DEFAULT_SELECT_FILL_COLOR
     vertex_fill_color = DEFAULT_VERTEX_FILL_COLOR
     hvertex_fill_color = DEFAULT_HVERTEX_FILL_COLOR
+    overlap_line_color = DEFAULT_OVERLAP_LINE_COLOR
+    overlap_fill_color = DEFAULT_OVERLAP_FILL_COLOR
     point_type = P_ROUND
     point_size = 8
     scale = 1.0
@@ -56,6 +62,8 @@ class Shape(object):
         self.fill = False
         self.selected = False
         self.difficult = difficult
+        self.is_overlapping = False  # 重叠状态标记
+        self.is_recently_copied = False  # 最近复制标记，用于避免误判重叠
 
         self.direction = 0  # added by hy
         self.center = None # added by hy
@@ -121,10 +129,17 @@ class Shape(object):
 
     def paint(self, painter):
         if self.points:
-            color = self.select_line_color if self.selected else self.line_color
+            # 优先级：重叠 > 选中 > 普通
+            if self.is_overlapping:
+                color = self.overlap_line_color
+            elif self.selected:
+                color = self.select_line_color
+            else:
+                color = self.line_color
             pen = QPen(color)
-            # Try using integer sizes for smoother drawing(?)
-            pen.setWidth(max(1, int(round(4.0 / self.scale))))
+            # 重叠框使用更粗的线条
+            line_width = 6.0 if self.is_overlapping else 4.0
+            pen.setWidth(max(1, int(round(line_width / self.scale))))
             painter.setPen(pen)
 
             line_path = QPainterPath()
@@ -154,7 +169,13 @@ class Shape(object):
             painter.drawPath(vrtx_path)
             painter.fillPath(vrtx_path, self.vertex_fill_color)
             if self.fill:
-                color = self.select_fill_color if self.selected else self.fill_color
+                # 优先级：重叠 > 选中 > 普通
+                if self.is_overlapping:
+                    color = self.overlap_fill_color
+                elif self.selected:
+                    color = self.select_fill_color
+                else:
+                    color = self.fill_color
                 painter.fillPath(line_path, color)
 
             if self.center is not None:
@@ -242,7 +263,12 @@ class Shape(object):
             shape.line_color = self.line_color
         if self.fill_color != Shape.fill_color:
             shape.fill_color = self.fill_color
-        shape.difficult = self.difficult 
+        shape.difficult = self.difficult
+        
+        # 复制的形状不应该被标记为重叠，并且标记为最近复制的
+        shape.is_overlapping = False
+        shape.is_recently_copied = True
+        
         return shape
 
     def __len__(self):
@@ -354,10 +380,17 @@ class Shape(object):
         
             def paint(self, painter):
                 if self.points:
-                    color = self.select_line_color if self.selected else self.line_color
+                    # 优先级：重叠 > 选中 > 普通
+                    if self.is_overlapping:
+                        color = self.overlap_line_color
+                    elif self.selected:
+                        color = self.select_line_color
+                    else:
+                        color = self.line_color
                     pen = QPen(color)
-                    # Try using integer sizes for smoother drawing(?)
-                    pen.setWidth(max(1, int(round(4.0 / self.scale))))
+                    # 重叠框使用更粗的线条
+                    line_width = 6.0 if self.is_overlapping else 4.0
+                    pen.setWidth(max(1, int(round(line_width / self.scale))))
                     painter.setPen(pen)
         
                     line_path = QPainterPath()
@@ -387,7 +420,13 @@ class Shape(object):
                     painter.drawPath(vrtx_path)
                     painter.fillPath(vrtx_path, self.vertex_fill_color)
                     if self.fill:
-                        color = self.select_fill_color if self.selected else self.fill_color
+                        # 优先级：重叠 > 选中 > 普通
+                        if self.is_overlapping:
+                            color = self.overlap_fill_color
+                        elif self.selected:
+                            color = self.select_fill_color
+                        else:
+                            color = self.fill_color
                         painter.fillPath(line_path, color)
         
                     if self.center is not None:
